@@ -1,15 +1,6 @@
 #!/bin/bash
 #set -x
 
-usage() {
-    cat <<EOF
-$0 [options] PROG [args]"
-
-options:    -h Show this help message
-            -v Be more verbose
-EOF
-}
-
 output() {
     local prefix=$1
     local func=$2
@@ -25,7 +16,7 @@ output() {
 process_file() {
     local file=$1
     local pattern="^#"
-    local pattern2="(.*)probe_\w+:(.*)"
+    local pattern2="(.*)probe_\w+:(.*):"
     local indent=0
 
     while read line
@@ -48,14 +39,74 @@ process_file() {
     done < $file
 }
 
+process_file_sketch() {
+    local file=$1
+    local pattern="^#"
+    local pattern2="probe_\w+:(.*):"
+    local pattern3="(.*)probe_\w+:(.*):"
+    local lines=0
+    local indent=0
+    declare -A count
+
+    # Pass 1: get function count
+    while read line
+    do
+        if [[ $line =~ $pattern ]]; then
+            continue
+        fi
+        if [[ $line =~ $pattern2 ]]; then
+            local func=${BASH_REMATCH[1]}
+            count[$func]=$((${count[$func]} + 1))
+        fi
+        lines=$(($lines + 1))
+    done < $file
+
+    local limit=$(($lines / 100))
+
+    # Pass 2: filter out utility functions
+    while read line
+    do
+        if [[ $line =~ $pattern ]]; then
+            continue
+        fi
+        if [[ $line =~ $pattern3 ]]; then
+            local prefix=${BASH_REMATCH[1]}
+            local func=${BASH_REMATCH[2]}
+
+            if [[ ${count[$func]} -gt $limit ]]; then
+                continue
+            fi
+            if [[ $line =~ "_return:" ]]; then
+                indent=$((indent - 1))
+            else
+                output "$prefix" "$func" $indent
+                indent=$((indent + 1))
+            fi
+        fi
+    done < $file
+}
+
 tracy_echo() {
     if [[ $VERBOSE == 1 ]]; then
         echo "$@"
     fi
 }
 
-while getopts "hv" opt; do
+usage() {
+    cat <<EOF
+$0 [options] PROG [args]"
+
+options:    -s Sketch mode, utility function calls will not be shown
+            -h Show this help message
+            -v Be more verbose
+EOF
+}
+
+while getopts "shv" opt; do
     case $opt in
+        s)
+            SKETCH=1
+            ;;
         h)
             usage
             exit 0
@@ -73,7 +124,7 @@ if [[ $(whoami) != "root" ]]; then
     exit 1;
 fi
 
-set -e
+#set -e
 BIN=$(which $1)
 CAPTURE=$(tempfile)
 BASE=$(basename $BIN)
@@ -104,7 +155,11 @@ fi
 tracy_echo "Processing result..."
 perf script > $CAPTURE
 
-process_file $CAPTURE > tracy.txt
+if [[ $SKETCH == 1 ]]; then
+    process_file_sketch $CAPTURE > tracy.txt
+else
+    process_file $CAPTURE > tracy.txt
+fi
 
 tracy_echo "Removing probes..."
 if [[ VERBOSE == 1 ]]; then
